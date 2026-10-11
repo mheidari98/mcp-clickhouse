@@ -6,10 +6,9 @@
   },
   "environment": {
     "dependencies": [
-      "clickhouse-connect",
+      "clickhouse-connect>=1.0.0,<2",
       "python-dotenv",
-      "truststore",
-      "chdb"
+      "truststore"
     ]
   }
 }

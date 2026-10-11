@@ -3,6 +3,8 @@ import pytest_asyncio
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 import asyncio
+import time
+from unittest.mock import patch
 from mcp_clickhouse.mcp_server import mcp, create_clickhouse_client
 from dotenv import load_dotenv
 import json
@@ -330,19 +332,38 @@ async def test_table_metadata_details(mcp_server, setup_test_database):
 async def test_system_database_access(mcp_server):
     """Test that we can access system databases."""
     async with Client(mcp_server) as client:
-        # List tables in system database with larger page size
-        result = await client.call_tool("list_tables", {"database": "system", "page_size": 100})
-        response = json.loads(result.content[0].text)
+        arguments = {
+            "database": "system",
+            "page_size": 100,
+            "include_detailed_columns": False,
+        }
+        table_names = []
+        total_tables = None
 
-        assert isinstance(response, dict)
-        assert "tables" in response
-        assert "total_tables" in response
-        tables = response["tables"]
+        while True:
+            result = await client.call_tool("list_tables", arguments)
+            response = json.loads(result.content[0].text)
 
-        assert response["total_tables"] > 10
+            assert isinstance(response, dict)
+            assert "tables" in response
+            assert "next_page_token" in response
+            assert "total_tables" in response
+
+            if total_tables is None:
+                total_tables = response["total_tables"]
+            else:
+                assert response["total_tables"] == total_tables
+            table_names.extend(table["name"] for table in response["tables"])
+
+            page_token = response["next_page_token"]
+            if page_token is None:
+                break
+            arguments["page_token"] = page_token
+
+        assert total_tables > 10
+        assert len(table_names) == total_tables
 
         # Check for some common system tables
-        table_names = [t["name"] for t in tables]
         assert "tables" in table_names
         assert "columns" in table_names
         assert "databases" in table_names
@@ -375,3 +396,35 @@ async def test_concurrent_queries(mcp_server, setup_test_database):
             query_result = json.loads(result.content[0].text)
             assert "rows" in query_result
             assert len(query_result["rows"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params", [None, {"value": 1}])
+async def test_run_query_does_not_block_other_mcp_requests(mcp_server, params):
+    """list_tools should complete while a query is in flight."""
+
+    def slow_execute_query(_query: str, _query_id: str, _client_config: dict, _params=None):
+        assert _params == params
+        time.sleep(0.75)
+        return json.dumps({"columns": ["value"], "rows": [[1]]})
+
+    async with Client(mcp_server) as client:
+        with patch(
+            "mcp_clickhouse.mcp_server._queries.execute_query", side_effect=slow_execute_query
+        ) as execute:
+            slow_task = asyncio.create_task(
+                client.call_tool("run_query", {"query": "SELECT {value:UInt32}", "params": params})
+            )
+            await asyncio.sleep(0.05)
+
+            start = time.perf_counter()
+            tools = await client.list_tools()
+            list_tools_elapsed = time.perf_counter() - start
+
+            await slow_task
+
+    execute.assert_called_once()
+    assert execute.call_args.args[0] == "SELECT {value:UInt32}"
+    assert execute.call_args.args[3] == params
+    assert len(tools) >= 1
+    assert list_tools_elapsed < 0.5
