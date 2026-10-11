@@ -26,6 +26,33 @@ from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier, JWTVerifier
 from fastmcp.server.auth.oidc_proxy import OIDCProxy, OIDCConfiguration
 from fastmcp.server.auth.auth import RemoteAuthProvider, AccessToken
+from fastmcp.server.auth.oauth_proxy import proxy as fastmcp_oauth_proxy
+
+def _drop_zero_refresh_expiry(token_response: Dict[str, Any]) -> Dict[str, Any]:
+    # Keycloak answers refresh_expires_in=0 for offline refresh tokens (no expiry).
+    # FastMCP takes 0 literally: it issues no refresh token on login and sizes the
+    # upstream token store TTL to the 5 minute access token. Dropping the key makes
+    # FastMCP use its 30 day default, which matches Keycloak's offline idle timeout.
+    if token_response.get("refresh_expires_in") == 0:
+        token_response.pop("refresh_expires_in")
+    return token_response
+
+
+class KeycloakOfflineTokenClient(fastmcp_oauth_proxy.AsyncOAuth2Client):
+    """Token client that normalises Keycloak's zero refresh expiry for offline tokens.
+
+    Installed by assignment on FastMCP's proxy module, so it applies to every
+    OAuthProxy in the process; this server creates only one. FastMCP keeps the
+    original expiry on refresh when the response has no refresh_expires_in, so the
+    30 day window is measured from the original login and does not slide.
+    """
+
+    async def fetch_token(self, *args, **kwargs):
+        return _drop_zero_refresh_expiry(await super().fetch_token(*args, **kwargs))
+
+    async def refresh_token(self, *args, **kwargs):
+        return _drop_zero_refresh_expiry(await super().refresh_token(*args, **kwargs))
+
 
 # FastMCP remembers consent approvals in a 1-year cookie holding one entry per
 # approved client_id:redirect_uri and never prunes it. Clients that re-register on
@@ -199,7 +226,14 @@ if mcp_config.server_transport in http_transports:
             # the PKCE flow without dynamic registration.
             enable_cimd=False,
             allowed_client_redirect_uris=["http://localhost:*", "http://127.0.0.1:*"],
+            # Forced on the upstream authorize request, overriding the (empty) scopes
+            # MCP clients send; offline_access gives refresh tokens a 30 day idle life.
+            extra_authorize_params=(
+                {"scope": " ".join(mcp_config.oidc_scopes)} if mcp_config.oidc_scopes else None
+            ),
         )
+        if mcp_config.oidc_scopes:
+            fastmcp_oauth_proxy.AsyncOAuth2Client = KeycloakOfflineTokenClient
         logger.info(
             "OIDC authentication enabled. Discovery URL: %s, Allowed groups: %s",
             mcp_config.oidc_discovery_url,

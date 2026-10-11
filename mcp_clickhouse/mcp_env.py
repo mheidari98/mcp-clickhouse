@@ -311,6 +311,10 @@ class MCPServerConfig:
         CLICKHOUSE_MCP_OIDC_CLIENT_SECRET: Keycloak client secret for the MCP server
         CLICKHOUSE_MCP_BASE_URL: Public base URL of this MCP server, e.g.
             https://clickhouse-mcp.yektanet.tech (required for OIDC mode)
+        CLICKHOUSE_MCP_OIDC_SCOPES: Optional space or comma separated scopes sent to
+            Keycloak on authorize, e.g. "openid profile email offline_access".
+            Adding offline_access makes Keycloak issue offline refresh tokens that
+            outlive the SSO session idle timeout (default: unset, Keycloak defaults).
     """
 
     @property
@@ -379,6 +383,12 @@ class MCPServerConfig:
     def oidc_client_secret(self) -> Optional[str]:
         """Keycloak client secret for this MCP server."""
         return os.getenv("CLICKHOUSE_MCP_OIDC_CLIENT_SECRET")
+
+    @property
+    def oidc_scopes(self) -> list[str]:
+        """Scopes forced on the upstream Keycloak authorize request (empty = default)."""
+        raw = os.getenv("CLICKHOUSE_MCP_OIDC_SCOPES", "")
+        return [s for s in raw.replace(",", " ").split() if s]
 
     @property
     def base_url(self) -> Optional[str]:
