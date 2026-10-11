@@ -6,6 +6,7 @@ import atexit
 import os
 import re
 import uuid
+from contextvars import ContextVar
 
 import clickhouse_connect
 from clickhouse_connect.driver.binding import format_query_value
@@ -25,6 +26,57 @@ from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier, JWTVerifier
 from fastmcp.server.auth.oidc_proxy import OIDCProxy, OIDCConfiguration
 from fastmcp.server.auth.auth import RemoteAuthProvider, AccessToken
+
+# FastMCP remembers consent approvals in a 1-year cookie holding one entry per
+# approved client_id:redirect_uri and never prunes it. Clients that re-register on
+# every login (new client_id, new loopback port) grow it until the consent redirect
+# response overflows the ingress proxy buffer and the browser gets a 502.
+MAX_APPROVED_CLIENTS = 20
+
+_approving_client_key: ContextVar[Optional[str]] = ContextVar(
+    "approving_client_key", default=None
+)
+
+
+# The subclass below relies on private FastMCP hooks; fail loudly at import if a
+# FastMCP upgrade renames them instead of silently going back to an unbounded cookie.
+for _hook in ("_submit_consent", "_encode_list_cookie", "_make_client_key"):
+    if not hasattr(OIDCProxy, _hook):
+        raise ImportError(f"fastmcp OIDCProxy no longer has {_hook}; update BoundedConsentOIDCProxy")
+
+
+class BoundedConsentOIDCProxy(OIDCProxy):
+    """OIDCProxy that caps the remembered-consent cookie at MAX_APPROVED_CLIENTS.
+
+    The client being approved is always kept. FastMCP sorts the list before encoding,
+    so when the cap is exceeded the lowest-sorting other entries survive and the rest
+    are dropped; this is not LRU. A dropped client only sees the consent page again.
+    The denied-clients cookie goes through the same cap.
+    """
+
+    async def _submit_consent(self, request: Request):
+        form = await request.form()
+        txn_model = await self._transaction_store.get(key=str(form.get("txn_id", "")))
+        if txn_model is None:
+            return await super()._submit_consent(request)
+        txn = txn_model.model_dump()
+        token = _approving_client_key.set(
+            self._make_client_key(txn["client_id"], txn["client_redirect_uri"])
+        )
+        try:
+            return await super()._submit_consent(request)
+        finally:
+            _approving_client_key.reset(token)
+
+    def _encode_list_cookie(self, values: List[str]) -> str:
+        if len(values) > MAX_APPROVED_CLIENTS:
+            approving = _approving_client_key.get()
+            keep_approving = approving in values
+            kept = [v for v in values if v != approving]
+            kept = kept[: MAX_APPROVED_CLIENTS - int(keep_approving)]
+            values = kept + [approving] if keep_approving else kept
+        return super()._encode_list_cookie(values)
+
 
 # chdb is an optional dependency (~600 MB embedded ClickHouse binary).
 # It is imported lazily below when CHDB_ENABLED=true.
@@ -135,7 +187,7 @@ if mcp_config.server_transport in http_transports:
             issuer=str(oidc_config.issuer),
             allowed_groups=mcp_config.allowed_groups,
         )
-        auth_provider = OIDCProxy(
+        auth_provider = BoundedConsentOIDCProxy(
             config_url=mcp_config.oidc_discovery_url,  # type: ignore[arg-type]
             client_id=mcp_config.oidc_client_id,  # type: ignore[arg-type]
             client_secret=mcp_config.oidc_client_secret,  # type: ignore[arg-type]
