@@ -230,6 +230,10 @@ Set `CLICKHOUSE_MCP_OIDC_ENABLED=true` to run FastMCP as an OAuth2 proxy in fron
 | `CLICKHOUSE_MCP_BASE_URL` | Public base URL of this server (required) |
 | `CLICKHOUSE_MCP_ALLOWED_GROUPS` | Comma-separated groups allowed to use the server, read from the token's `groups` claim; empty allows any valid token |
 | `CLICKHOUSE_MCP_OIDC_SCOPES` | Optional space or comma separated scopes forced on the upstream authorize request, e.g. `openid profile email offline_access` for long-lived refresh tokens |
+| `CLICKHOUSE_MCP_ALLOWED_HOSTS` | Public `Host` value(s) the reverse proxy forwards. Required when binding a wildcard address such as `0.0.0.0` |
+| `CLICKHOUSE_MCP_ALLOWED_ORIGINS` | Public origin(s), e.g. `https://mcp.example.com`. Required for the browser consent step: browsers send `Origin` on the `POST /consent` form, and any `Origin` not listed is rejected with `403` |
+
+Forcing `offline_access` requires that the identity provider client may request it and that users hold the role that permits offline tokens; otherwise the upstream login is refused. The OAuth state is keyed by a value derived from `CLICKHOUSE_MCP_OIDC_CLIENT_SECRET`, so rotating the secret signs everyone out.
 
 #### OAuth / OIDC via FastMCP
 
