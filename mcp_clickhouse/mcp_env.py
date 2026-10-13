@@ -693,6 +693,20 @@ class MCPServerConfig:
         return [scope for scope in raw.replace(",", " ").split() if scope]
 
     @property
+    def oauth_state_prune_interval_seconds(self) -> int:
+        """Seconds between OAuth state cleanup passes (0 disables cleanup)."""
+        return int(os.getenv("CLICKHOUSE_MCP_OAUTH_STATE_PRUNE_INTERVAL_SECONDS", "3600"))
+
+    @property
+    def oauth_state_max_age_seconds(self) -> int:
+        """Age after which OAuth client registrations (which never expire) are removed.
+
+        0 keeps them forever.
+        """
+        days = int(os.getenv("CLICKHOUSE_MCP_OAUTH_STATE_MAX_AGE_DAYS", "180"))
+        return days * 86400
+
+    @property
     def allowed_groups(self) -> List[str]:
         """Identity-provider groups whose members may use the server (empty = any)."""
         return _split_env_list("CLICKHOUSE_MCP_ALLOWED_GROUPS")

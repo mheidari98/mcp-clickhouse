@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
 from dotenv import dotenv_values, load_dotenv
+from fastmcp import settings as fastmcp_settings
 from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.oidc_proxy import OIDCConfiguration, OIDCProxy
@@ -15,6 +16,7 @@ from fastmcp.utilities.auth import parse_scopes
 from pydantic import TypeAdapter
 
 from mcp_clickhouse.mcp_env import TransportType
+from mcp_clickhouse.oauth_state import start_oauth_state_pruner
 
 logger = logging.getLogger("mcp-clickhouse")
 
@@ -469,7 +471,7 @@ def _build_oidc_proxy(mcp_config) -> OIDCProxy:
         allowed_groups=mcp_config.allowed_groups,
     )
     scopes = mcp_config.oidc_scopes
-    return OIDCProxy(
+    proxy = OIDCProxy(
         config_url=mcp_config.oidc_discovery_url,
         client_id=mcp_config.oidc_client_id,
         client_secret=mcp_config.oidc_client_secret,
@@ -482,6 +484,13 @@ def _build_oidc_proxy(mcp_config) -> OIDCProxy:
         # Forced upstream, overriding the (usually empty) scopes MCP clients send.
         extra_authorize_params={"scope": " ".join(scopes)} if scopes else None,
     )
+    # FastMCP's default file store never deletes expired entries.
+    start_oauth_state_pruner(
+        fastmcp_settings.home / "oauth-proxy",
+        mcp_config.oauth_state_prune_interval_seconds,
+        mcp_config.oauth_state_max_age_seconds,
+    )
+    return proxy
 
 
 def _resolve_auth(mcp_config, transport: Optional[str] = None) -> Dict[str, Any]:

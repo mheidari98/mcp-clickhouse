@@ -22,10 +22,13 @@ def oidc_env(monkeypatch: pytest.MonkeyPatch):
         "FASTMCP_SERVER_AUTH",
         "CLICKHOUSE_MCP_ALLOWED_GROUPS",
         "CLICKHOUSE_MCP_OIDC_SCOPES",
+        "CLICKHOUSE_MCP_OAUTH_STATE_PRUNE_INTERVAL_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     for name, value in OIDC_ENV.items():
         monkeypatch.setenv(name, value)
+    # Never start a real pruner against the developer's FastMCP home.
+    monkeypatch.setattr(auth, "start_oauth_state_pruner", lambda *args: None)
     return monkeypatch
 
 
