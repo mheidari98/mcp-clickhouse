@@ -1,0 +1,183 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## Unreleased
+
+### Added
+
+- A server-instruction hint to read `AGENTS.ROOT` through `run_query` when `list_databases` reveals an `AGENTS` database, before writing analytical SQL. This adds discovery guidance only; no automatic metadata queries or tool-result changes.
+
+## 0.7.0 - 2026-09-18
+
+### Added
+- Optional `params` on `run_query` for ClickHouse `{name:Type}` parameter binding, including scalar values and arrays. Existing calls and result encoding are unchanged. ([#238](https://github.com/ClickHouse/mcp-clickhouse/issues/238))
+- Outbound ClickHouse HTTPS support for private CA bundles and client certificates through `CLICKHOUSE_CA_CERT`, `CLICKHOUSE_CLIENT_CERT`, `CLICKHOUSE_CLIENT_CERT_KEY`, and `CLICKHOUSE_TLS_MODE`. Mutual mode uses the certificate for ClickHouse user authentication without sending a password. Strict and proxy modes present the certificate while retaining Basic authentication. A custom `pool_mgr` override cannot be combined with these certificate settings. ([#116](https://github.com/ClickHouse/mcp-clickhouse/pull/116))
+
+### Changed
+- The `/health` endpoint now reuses a completed ClickHouse probe result for one second. Sequential probes no longer run a ClickHouse check each time, at the cost of reporting a failure or a recovery up to a second late. ([#227](https://github.com/ClickHouse/mcp-clickhouse/issues/227))
+- The `run_query` description and the README now cover `DESCRIBE (<query>)` and `EXPLAIN ESTIMATE <query>` as optional checks: `DESCRIBE` inspects a query's result schema and surfaces analysis errors, and `EXPLAIN ESTIMATE` reports the estimated parts, rows and marks read from MergeTree family tables, which is not run time and not result size. Neither runs the query body, though analysis can execute scalar subqueries, and a query that describes cleanly can still fail at runtime. Both already ran through `run_query`; only the documentation is new. ([#225](https://github.com/ClickHouse/mcp-clickhouse/issues/225))
+- The supported clickhouse-connect range is now `>=1.0.0,<2`. Locked development and container environments now use clickhouse-connect 1.8.0 and cryptography 50.0.1.
+- Local development and README launcher examples now use Python 3.12. CI covers Python 3.10 through 3.14, with Python 3.10 retained as the supported minimum.
+- Request-scoped client overrides are now validated for TLS consistency before client creation. `verify`, `ca_cert`, `client_cert`, `client_cert_key`, `tls_mode`, `server_host_name`, and `pool_mgr` must be top-level overrides and are rejected under `generic_args` and as DSN query parameters. Previously `generic_args.verify` and a DSN `verify` parameter reached clickhouse-connect. DSN overrides cannot select the chdb backend.
+- A `secure` override now switches the client interface between `https` and `http`, and an explicit `interface` override must be `http` or `https` and agree with `secure`. Previously a `secure` override alone left the base interface in place. `secure` and `verify` override values must be booleans or the strings `true` or `false`. `verify` also accepts `proxy`.
+
+### Compatibility
+
+- Some undocumented imports from `mcp_clickhouse.mcp_server`, including `Table`, `execute_query`, and `QUERY_EXECUTOR`, have been removed. See [Code layout](README.md#code-layout) for the owning modules. Query execution methods and worker pools now belong to per-server instances. The exports in `mcp_clickhouse.__all__` and the documented `mcp_server.CLIENT_CONFIG_OVERRIDES_KEY` import remain available. MCP tool and prompt contracts are unchanged.
+
+## 0.6.0 - 2026-09-03
+
+### Added
+- MCP handling through FastMCP 4 for modern `2026-07-28` clients and legacy clients using `2024-11-05` through `2025-11-25`. The modern path includes `server/discover`, sessionless requests, response caching hints, and request metadata validation. ([#218](https://github.com/ClickHouse/mcp-clickhouse/issues/218))
+
+### Changed
+- The FastMCP dependency is now `>=4.0.0,<4.1.0`. The upper bound pins the FastMCP 4.0 request-state API used to keep ClickHouse client overrides request-scoped. A session-scoped override now fails the affected tool call. Custom middleware must await `Context.set_state()` and use `serializable=False` for these overrides.
+- The standalone HTTP+SSE transport remains available but is deprecated and logs a warning. Use `CLICKHOUSE_MCP_SERVER_TRANSPORT=http` for Streamable HTTP in new deployments.
+- OAuth/OIDC provider environment loading is now handled by mcp-clickhouse because FastMCP 4 removed its automatic `FASTMCP_SERVER_AUTH` loader. Existing built-in provider process variables keep their FastMCP 2.14.7 names and process-first precedence. The working-directory `.env` fallback for missing provider fields is preserved. Provider selection from the package-discovered `.env` and a process-set `FASTMCP_ENV_FILE` is new. Those files may also supply provider fields. Custom providers must support no-argument construction. Supabase HS256 is no longer supported by FastMCP and must move to RS256 or ES256. Clients using FastMCP 2's default OAuth proxy storage must register and authorize again. Compatible custom storage, static tokens, and JWT verification are unaffected.
+- `.env` discovery now starts at the installed `mcp_clickhouse` package directory and walks upward to the filesystem root in every launch mode. `python -m mcp_clickhouse.main`, `python -c`, debugger, and frozen launches no longer read `.env` from the working directory, so a working-directory `.env` cannot select the auth provider from those launch modes.
+- ClickHouse metadata tools now use a separate worker pool with `min(4, CLICKHOUSE_MCP_MAX_WORKERS)` threads so concurrent schema discovery cannot delay query execution.
+- Protocol responses now report the installed mcp-clickhouse package version, or `unknown` when distribution metadata is unavailable, instead of the FastMCP version.
+
+### Compatibility
+- FastMCP 4.0.0 and MCP Python SDK 2.1.1 route HTTP requests without `MCP-Protocol-Version` through legacy handling. MCP `2026-07-28` permits this for servers that support clients from before `2025-06-18`. Modern clients should send the header on every POST request.
+
+## 0.5.0 - 2026-09-01
+
+### Added
+- Client connection reuse across tool calls via a config-keyed cache, eliminating per-call connection overhead. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- Best-effort server-side query cancellation: timed-out queries now attempt `KILL QUERY` on the ClickHouse server so workers and server resources can be released. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- `CLICKHOUSE_MCP_MAX_WORKERS` environment variable to configure the query worker thread pool size (default: `10`). ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- DNS rebinding protection for every HTTP and SSE launch path, including `fastmcp run` and `fastmcp.json`. `Host` and `Origin` headers are validated via the new `CLICKHOUSE_MCP_ALLOWED_HOSTS` and `CLICKHOUSE_MCP_ALLOWED_ORIGINS` variables: a present `Origin` that is not allow-listed is rejected with `403`, and an unknown `Host` with `421`. Authentication is now enforced whenever `fastmcp run` selects HTTP or SSE, independently of `CLICKHOUSE_MCP_SERVER_TRANSPORT`, closing a launch path that previously served unauthenticated. ([#218](https://github.com/ClickHouse/mcp-clickhouse/issues/218))
+- With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, the server now runs `SHOW GRANTS` once at first connection and logs a warning if the ClickHouse user holds `ALL`, `DROP`, `TRUNCATE`, `DELETE`, `UPDATE`, or `ALTER` (beyond `ALTER ADD`) privileges, since the destructive-operation gate is not server-enforced. The check is fail-open and never blocks startup or queries. Grants held via roles are not expanded, so the advisory only flags direct grants.
+
+### Changed
+- The minimum FastMCP version is now 2.12.3, matching the HTTP transport API used by the server, and `uvicorn>=0.31.0` is now a direct dependency (previously transitive) for trusted proxy header processing.
+- `CLICKHOUSE_SEND_RECEIVE_TIMEOUT` is now auto-capped to `CLICKHOUSE_MCP_QUERY_TIMEOUT + 5` unless explicitly set, so HTTP reads unblock shortly after an MCP timeout fires. ([#152](https://github.com/ClickHouse/mcp-clickhouse/pull/152))
+- **Breaking:** HTTP/SSE transports now validate `Host` and `Origin` by default, so existing deployments can change behavior on upgrade:
+  - A wildcard bind (`CLICKHOUSE_MCP_BIND_HOST=0.0.0.0` or `::`) now refuses to start unless `CLICKHOUSE_MCP_ALLOWED_HOSTS` is set, because the public host cannot be inferred. Migration: set `CLICKHOUSE_MCP_ALLOWED_HOSTS` to the `host:port` values clients and reverse proxies use.
+  - A request whose `Host` is not the bind address or a loopback default is rejected with `421`, and any request carrying an `Origin` not listed in `CLICKHOUSE_MCP_ALLOWED_ORIGINS` is rejected with `403`. Migration: set `CLICKHOUSE_MCP_ALLOWED_ORIGINS` for browser-based clients; non-browser clients that send no `Origin` are unaffected.
+  - The `/health` endpoint remains unauthenticated and is exempt from Host and Origin validation for GET and HEAD requests, so orchestrator liveness/readiness probes can use runtime-assigned IP Hosts without extra configuration. It is reserved and cannot be used as the MCP transport path.
+- The destructive-operation gate (`CLICKHOUSE_ALLOW_DROP`) now also blocks `DELETE`, `UPDATE` (including the `ALTER TABLE ... DELETE` / `UPDATE` mutations), `REPLACE TABLE` / `REPLACE PARTITION` / `CREATE OR REPLACE`, `ALTER TABLE ... CLEAR COLUMN` / `CLEAR INDEX` / `CLEAR PROJECTION`, and `DETACH ... PERMANENTLY`. These previously ran with write access alone and now require `CLICKHOUSE_ALLOW_DROP=true` as well. Plain `DETACH` stays allowed because it is reversible with `ATTACH`.
+- Connection failures now log actionable hints for common misconfigurations (native TCP port used instead of the HTTP interface, TLS/`CLICKHOUSE_SECURE` mismatches), and a warning is logged when `CLICKHOUSE_PORT` is set to a native protocol port (9000/9440). ([#102](https://github.com/ClickHouse/mcp-clickhouse/issues/102))
+
+### Fixed
+- Integers outside JavaScript's safe range are now returned as decimal strings in ClickHouse and chDB tool results, preventing silent precision loss in JavaScript MCP clients. Adds a `simplejson` dependency. ([#111](https://github.com/ClickHouse/mcp-clickhouse/issues/111))
+- Reverse proxies that cannot preserve the public `Host` can now configure exact proxy IP addresses or CIDR networks with `CLICKHOUSE_MCP_TRUSTED_PROXIES`. `X-Forwarded-Host` is accepted only from an immediate trusted peer and must be a single unambiguous value. The built-in HTTP/SSE runner validates Host before applying Uvicorn proxy-header processing. On dual-stack binds, IPv4 proxies observed as IPv4-mapped IPv6 peers match IPv4 entries, and IPv4-mapped CIDR entries are normalized to IPv4. Preserving `Host` at the proxy remains the preferred configuration.
+- `/health` now runs ClickHouse probes outside the event loop and shares one probe across concurrent requests. A stalled probe returns `503` after two seconds instead of blocking the HTTP server.
+- The exported `create_clickhouse_client` helper again preserves clickhouse-connect session ID behavior. Cache-owned MCP clients still disable autogenerated session IDs.
+- `list_databases` and `list_tables` now evict stale cached clients and retry once after connection errors. `run_query` is not retried because a write may already have succeeded.
+- `list_tables` now rejects non-positive `page_size` values instead of returning malformed or empty pages.
+- Per-request ClickHouse client configuration overrides now reach `run_query` worker threads. Invalid override state and role aliases fail closed, nested settings preserve the configured role, and opaque client objects remain supported.
+- Destructive-operation protection no longer misses `TRUNCATE` statements that omit the `TABLE` keyword (`TRUNCATE db.name` is valid ClickHouse syntax), `TRUNCATE DATABASE`, `TRUNCATE ALL TABLES FROM`, `ALTER TABLE ... DROP PARTITION` / `DROP PART` / `DROP COLUMN`, or `DROP` of object types outside `TABLE`/`DATABASE`/`VIEW`/`DICTIONARY`. With `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` and `CLICKHOUSE_ALLOW_DROP` unset, these statements previously ran and deleted data.
+- Destructive-operation protection no longer rejects safe statements that merely contain `drop` or `truncate` inside a string literal, a quoted identifier, or a SQL comment, such as `INSERT INTO logs VALUES ('drop the table')`. Comments can no longer hide a destructive statement from the check either.
+
+## 0.4.1 - 2026-07-17
+
+### Changed
+- Added FastMCP server-level instructions that point agents to official ClickHouse Agent Skills (replacing tool-based advisory guidance).
+
+## 0.4.0 - 2026-06-03
+
+### Added
+- Support for FastMCP OAuth/OIDC auth providers on HTTP/SSE transports via the `FASTMCP_SERVER_AUTH` environment variable (e.g. Azure Entra, Google, GitHub, WorkOS). Static token, FastMCP OAuth, and disabled mode are now mutually exclusive; configure exactly one. ([#171](https://github.com/ClickHouse/mcp-clickhouse/issues/171))
+- Official multi-arch Docker images published to GitHub Container Registry on each release: `ghcr.io/clickhouse/mcp-clickhouse:vX.Y.Z`, `:X.Y`, and `:latest`.
+
+### Changed
+- `/health` endpoint is now unauthenticated across all auth modes (previously gated only under static-token mode, which was asymmetric and incompatible with redirect-based OAuth providers). Response bodies trimmed to `OK` / generic error strings to avoid leaking ClickHouse version information or connection exception details; underlying errors are logged server-side.
+
+### Fixed
+- Tool responses now return JSON-encoded strings, avoiding MCP protocol validation errors on successful queries. ([#154](https://github.com/ClickHouse/mcp-clickhouse/pull/154))
+- Long-running queries no longer block other tool calls. The MCP-facing `run_query` and `run_chdb_select_query` tools now await their thread-pool futures asynchronously, so concurrent tool calls are served while a slow query is in flight. ([#128](https://github.com/ClickHouse/mcp-clickhouse/issues/128))
+
+## 0.3.0 - 2026-04-14
+
+### Added
+- SNI override support via `CLICKHOUSE_SNI` environment variable for connections behind proxies or load balancers. ([#127](https://github.com/ClickHouse/mcp-clickhouse/pull/127))
+- Lazy-load chdb to avoid ~80-100 MB memory overhead when the feature is disabled. ([#144](https://github.com/ClickHouse/mcp-clickhouse/pull/144))
+- Made chdb an optional dependency for Windows compatibility. ([#145](https://github.com/ClickHouse/mcp-clickhouse/pull/145))
+- Optional write access mode via `CLICKHOUSE_WRITE_ACCESS` environment variable, with built-in DROP and TRUNCATE protection. ([#93](https://github.com/ClickHouse/mcp-clickhouse/pull/93))
+- Client config override support through MCP Context session states, enabling dynamic connection switching at runtime. ([#115](https://github.com/ClickHouse/mcp-clickhouse/pull/115))
+- Custom middleware injection via `CLICKHOUSE_MCP_MIDDLEWARE` environment variable for hooking into the MCP server lifecycle. Includes an example middleware module. ([#114](https://github.com/ClickHouse/mcp-clickhouse/pull/114))
+
+## 0.2.0 - 2026-01-28
+
+### Added
+- Basic authentication support for HTTP/SSE transport. ([#113](https://github.com/ClickHouse/mcp-clickhouse/pull/113))
+
+## 0.1.13 - 2025-12-16
+
+### Added
+- `CLICKHOUSE_ROLE` support for setting a ClickHouse role on connections. ([#103](https://github.com/ClickHouse/mcp-clickhouse/pull/103))
+- Paginated `list_tables` output. ([#92](https://github.com/ClickHouse/mcp-clickhouse/pull/92))
+
+### Changed
+- Switched to OS truststore libraries. ([#91](https://github.com/ClickHouse/mcp-clickhouse/pull/91))
+- Made query timeout duration configurable. ([#89](https://github.com/ClickHouse/mcp-clickhouse/pull/89))
+- Explicitly set interface based on `secure` value. ([#87](https://github.com/ClickHouse/mcp-clickhouse/pull/87))
+- Switched Docker image to Alpine for smaller footprint. ([#86](https://github.com/ClickHouse/mcp-clickhouse/pull/86))
+
+## 0.1.12 - 2025-09-15
+
+### Changed
+- Refactored chDB prompt to avoid context-too-large errors. ([#75](https://github.com/ClickHouse/mcp-clickhouse/pull/75))
+- Upgraded dependencies. ([#66](https://github.com/ClickHouse/mcp-clickhouse/pull/66))
+
+### Added
+- Instructions for running without `uv`. ([#65](https://github.com/ClickHouse/mcp-clickhouse/pull/65))
+- Configurable bind host and port via environment variables. ([#64](https://github.com/ClickHouse/mcp-clickhouse/pull/64))
+- chDB support for local ClickHouse queries. ([#51](https://github.com/ClickHouse/mcp-clickhouse/pull/51))
+
+## 0.1.9 - 2025-06-24
+
+### Changed
+- Migrated to fastmcp for more active upstream maintenance. ([#59](https://github.com/ClickHouse/mcp-clickhouse/pull/59))
+
+## 0.1.8 - 2025-06-16
+
+### Added
+- Token-efficient result encoding to reduce context usage. ([#55](https://github.com/ClickHouse/mcp-clickhouse/pull/55))
+- Dockerfile for containerized deployment. ([#54](https://github.com/ClickHouse/mcp-clickhouse/pull/54))
+- `CLICKHOUSE_PROXY_PATH` environment variable for proxy path support. ([#52](https://github.com/ClickHouse/mcp-clickhouse/pull/52))
+
+## 0.1.5 - 2025-03-21
+
+### Added
+- Tool descriptions for AWS Bedrock compatibility. ([#23](https://github.com/ClickHouse/mcp-clickhouse/pull/23))
+- Support for parameterized views in `list_tables` with optimized row counts via system schema.
+- `total_rows` and `column_count` fields in `list_tables` output. ([#32](https://github.com/ClickHouse/mcp-clickhouse/pull/32))
+
+### Fixed
+- Respect server `readonly` settings and improve query handling. ([#35](https://github.com/ClickHouse/mcp-clickhouse/pull/35))
+- Ensure `.env` loaded before config init during `mcp dev` startup. ([#30](https://github.com/ClickHouse/mcp-clickhouse/pull/30))
+- Prevent `BrokenResourceError` by returning structured responses for query errors. ([#26](https://github.com/ClickHouse/mcp-clickhouse/pull/26))
+
+## 0.1.3 - 2025-02-20
+
+### Added
+- `client_name` identification header (`mcp_clickhouse`). ([#21](https://github.com/ClickHouse/mcp-clickhouse/pull/21))
+- Query timeout and thread pool for SELECT queries. ([#20](https://github.com/ClickHouse/mcp-clickhouse/pull/20))
+- Gather comments from ClickHouse tables for richer metadata. ([#13](https://github.com/ClickHouse/mcp-clickhouse/pull/13))
+- PyPI publish GitHub Action. ([#19](https://github.com/ClickHouse/mcp-clickhouse/pull/19))
+
+### Fixed
+- Escape strings and identifiers in generated queries. ([#14](https://github.com/ClickHouse/mcp-clickhouse/pull/14))
+
+### Changed
+- Bundle system certificates as part of the MCP server. ([#15](https://github.com/ClickHouse/mcp-clickhouse/pull/15))
+- Upgraded to official MCP SDK's FastMCP. ([#17](https://github.com/ClickHouse/mcp-clickhouse/pull/17))
+
+## 0.1.1 - 2025-02-20
+
+### Added
+- Comprehensive environment configuration handling. ([#11](https://github.com/ClickHouse/mcp-clickhouse/pull/11))
+- PyPI integration. ([#6](https://github.com/ClickHouse/mcp-clickhouse/pull/6))
+
+## 0.1.0 - 2024-12-24
+
+### Added
+- Initial release of `mcp-clickhouse`.
+- MCP server with `run_select_query`, `list_databases`, `list_tables` tools.
+- ClickHouse connection via `clickhouse-connect`.
+- CI test suite.
+- Apache v2 license.
