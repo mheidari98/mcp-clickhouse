@@ -1,5 +1,7 @@
 import asyncio
+import errno
 import json
+import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -12,6 +14,7 @@ from key_value.aio.stores.filetree import (
 )
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
+from mcp_clickhouse import oauth_state
 from mcp_clickhouse.oauth_state import prune_oauth_state, start_oauth_state_pruner
 
 NOW = datetime(2026, 10, 13, tzinfo=timezone.utc)
@@ -41,9 +44,11 @@ def test_prunes_only_expired_and_aged_entries(tmp_path):
     info = tmp_path / "fingerprint" / "mcp-refresh-tokens-info.json"
     info.write_text(json.dumps({"collection": "mcp-refresh-tokens", "version": 1}))
 
-    removed = prune_oauth_state(tmp_path, 90 * 86400, now=NOW.timestamp())
+    result = prune_oauth_state(tmp_path, 90 * 86400, now=NOW.timestamp())
 
-    assert removed == 2
+    assert result.removed == 2
+    assert result.scanned == 4
+    assert result.with_expiry == 2
     assert not expired.exists()
     assert not old_client.exists()
     assert live.exists()
@@ -56,7 +61,7 @@ def test_max_age_zero_keeps_registrations(tmp_path):
     old_client = write_entry(clients, "old.json", created_at=NOW - timedelta(days=1000))
     expired = write_entry(clients, "expired.json", expires_at=NOW - timedelta(days=1))
 
-    assert prune_oauth_state(tmp_path, 0, now=NOW.timestamp()) == 1
+    assert prune_oauth_state(tmp_path, 0, now=NOW.timestamp()).removed == 1
     assert old_client.exists()
     assert not expired.exists()
 
@@ -69,13 +74,13 @@ def test_leaves_unreadable_and_foreign_files(tmp_path):
     foreign = directory / "notes.txt"
     foreign.write_text("keep")
 
-    assert prune_oauth_state(tmp_path, 86400, now=NOW.timestamp()) == 0
+    assert prune_oauth_state(tmp_path, 86400, now=NOW.timestamp()).removed == 0
     assert corrupt.exists()
     assert foreign.exists()
 
 
 def test_missing_root_is_a_noop(tmp_path):
-    assert prune_oauth_state(tmp_path / "absent", 86400) == 0
+    assert prune_oauth_state(tmp_path / "absent", 86400).removed == 0
 
 
 def test_skips_entry_rewritten_after_read(tmp_path, monkeypatch):
@@ -95,7 +100,7 @@ def test_skips_entry_rewritten_after_read(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os, "stat", stat_with_rewrite)
 
-    assert prune_oauth_state(tmp_path, 0, now=NOW.timestamp()) == 0
+    assert prune_oauth_state(tmp_path, 0, now=NOW.timestamp()).removed == 0
     assert path.exists()
 
 
@@ -132,7 +137,7 @@ def test_prunes_entries_written_by_the_real_file_store(tmp_path):
 
     asyncio.run(populate())
 
-    assert prune_oauth_state(tmp_path, 0, now=time.time() + 60) == 1
+    assert prune_oauth_state(tmp_path, 0, now=time.time() + 60).removed == 1
     assert len(list(tmp_path.rglob("*.json"))) == 4  # 2 collection infos + 2 entries
 
 
@@ -140,3 +145,90 @@ def test_one_pruner_per_root(tmp_path):
     first = start_oauth_state_pruner(tmp_path, 3600, 0)
 
     assert start_oauth_state_pruner(tmp_path, 3600, 0) is first
+
+
+def test_prunes_every_fingerprint_directory_under_root(tmp_path):
+    expired = [
+        write_entry(
+            tmp_path / fingerprint / "mcp-jti-mappings",
+            "expired.json",
+            expires_at=NOW - timedelta(days=1),
+        )
+        for fingerprint in ("current", "rotated-away")
+    ]
+
+    assert prune_oauth_state(tmp_path, 0, now=NOW.timestamp()).removed == 2
+    assert not any(path.exists() for path in expired)
+
+
+def test_naive_timestamps_are_treated_as_utc(tmp_path):
+    directory = tmp_path / "mcp-jti-mappings"
+    directory.mkdir()
+    path = directory / "naive.json"
+    path.write_text(json.dumps({"expires_at": "2026-10-12T00:00:00", "value": {}}))
+
+    assert prune_oauth_state(tmp_path, 0, now=NOW.timestamp()).removed == 1
+    assert not path.exists()
+
+
+def test_entry_without_any_timestamp_is_kept(tmp_path):
+    directory = tmp_path / "mcp-oauth-proxy-clients"
+    directory.mkdir()
+    path = directory / "bare.json"
+    path.write_text(json.dumps({"value": {}}))
+
+    assert prune_oauth_state(tmp_path, 86400, now=NOW.timestamp()).removed == 0
+    assert path.exists()
+
+
+def test_stale_temp_files_are_removed_and_fresh_ones_kept(tmp_path):
+    directory = tmp_path / "mcp-jti-mappings"
+    directory.mkdir()
+    stale = directory / "tmpold.tmp"
+    fresh = directory / "tmpnew.tmp"
+    stale.write_text("{")
+    fresh.write_text("{")
+    now = time.time()
+    os.utime(stale, (now - 7200, now - 7200))
+
+    assert prune_oauth_state(tmp_path, 0, now=now).removed == 1
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_stops_after_first_read_only_error(tmp_path, monkeypatch, caplog):
+    directory = tmp_path / "mcp-jti-mappings"
+    for index in range(3):
+        write_entry(directory, f"expired{index}.json", expires_at=NOW - timedelta(days=1))
+
+    def read_only_unlink(path, *args, **kwargs):
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(os, "unlink", read_only_unlink)
+
+    with caplog.at_level(logging.WARNING, logger="mcp-clickhouse"):
+        result = prune_oauth_state(tmp_path, 0, now=NOW.timestamp())
+
+    assert result.removed == 0
+    assert len([r for r in caplog.records if "Could not prune" in r.message]) == 1
+
+
+def test_warns_when_no_entry_has_a_parseable_expiry(tmp_path, monkeypatch, caplog):
+    directory = tmp_path / "mcp-jti-mappings"
+    for index in range(oauth_state._FORMAT_CHANGE_CANARY_FILES):
+        path = directory / f"entry{index}.json"
+        directory.mkdir(exist_ok=True)
+        path.write_text(json.dumps({"value": {}, "ttl_deadline": "soon"}))
+
+    def stop_after_one_pass(_seconds):
+        raise SystemExit
+
+    monkeypatch.setattr(oauth_state.time, "sleep", stop_after_one_pass)
+
+    with caplog.at_level(logging.WARNING, logger="mcp-clickhouse"):
+        try:
+            oauth_state._prune_forever(tmp_path, 3600, 0)
+        except SystemExit:
+            pass
+
+    assert any("format may have changed" in record.message for record in caplog.records)

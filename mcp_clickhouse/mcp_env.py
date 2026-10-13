@@ -701,9 +701,11 @@ class MCPServerConfig:
     def oauth_state_max_age_seconds(self) -> int:
         """Age after which OAuth client registrations (which never expire) are removed.
 
-        0 keeps them forever.
+        Must exceed the longest refresh-token lifetime (one year by default in
+        FastMCP): a registration is never refreshed, so removing one that an active
+        session still uses signs that session out. 0 keeps them forever.
         """
-        days = int(os.getenv("CLICKHOUSE_MCP_OAUTH_STATE_MAX_AGE_DAYS", "180"))
+        days = int(os.getenv("CLICKHOUSE_MCP_OAUTH_STATE_MAX_AGE_DAYS", "400"))
         return days * 86400
 
     @property

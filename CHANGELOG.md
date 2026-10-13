@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- OIDC mode now removes expired OAuth proxy state from disk hourly and drops client registrations older than 180 days. FastMCP's file store never deletes expired entries, so long-running servers could exhaust the state volume's inodes. Tune with `CLICKHOUSE_MCP_OAUTH_STATE_PRUNE_INTERVAL_SECONDS` and `CLICKHOUSE_MCP_OAUTH_STATE_MAX_AGE_DAYS`.
+- OIDC mode now removes expired OAuth proxy state from disk hourly and drops client registrations older than 400 days. FastMCP's file store never deletes expired entries, so long-running servers could exhaust the state volume's inodes. Tune with `CLICKHOUSE_MCP_OAUTH_STATE_PRUNE_INTERVAL_SECONDS` and `CLICKHOUSE_MCP_OAUTH_STATE_MAX_AGE_DAYS`.
 - A server-instruction hint to read `AGENTS.ROOT` through `run_query` when `list_databases` reveals an `AGENTS` database, before writing analytical SQL. This adds discovery guidance only; no automatic metadata queries or tool-result changes.
 
 ## 0.7.0 - 2026-09-18

@@ -485,6 +485,7 @@ def _build_oidc_proxy(mcp_config) -> OIDCProxy:
         extra_authorize_params={"scope": " ".join(scopes)} if scopes else None,
     )
     # FastMCP's default file store never deletes expired entries.
+    # Remove once FastMCP culls its own store (PrefectHQ/fastmcp#5718).
     start_oauth_state_pruner(
         fastmcp_settings.home / "oauth-proxy",
         mcp_config.oauth_state_prune_interval_seconds,

@@ -231,7 +231,7 @@ Set `CLICKHOUSE_MCP_OIDC_ENABLED=true` to run FastMCP as an OAuth2 proxy in fron
 | `CLICKHOUSE_MCP_ALLOWED_GROUPS` | Comma-separated groups allowed to use the server, read from the token's `groups` claim; empty allows any valid token |
 | `CLICKHOUSE_MCP_OIDC_SCOPES` | Optional space or comma separated scopes forced on the upstream authorize request, e.g. `openid profile email offline_access` for long-lived refresh tokens |
 | `CLICKHOUSE_MCP_OAUTH_STATE_PRUNE_INTERVAL_SECONDS` | Seconds between cleanup passes over the stored OAuth state, which FastMCP never prunes itself; `0` disables cleanup (default `3600`) |
-| `CLICKHOUSE_MCP_OAUTH_STATE_MAX_AGE_DAYS` | Days after which OAuth client registrations, which have no expiry, are removed; clients re-register on their next login; `0` keeps them forever (default `180`) |
+| `CLICKHOUSE_MCP_OAUTH_STATE_MAX_AGE_DAYS` | Days after which OAuth client registrations, which have no expiry, are removed; a client that still holds a live session is signed out and must log in again, so keep this above the one-year refresh-token lifetime; `0` keeps them forever (default `400`) |
 | `CLICKHOUSE_MCP_ALLOWED_HOSTS` | Public `Host` value(s) the reverse proxy forwards. Required when binding a wildcard address such as `0.0.0.0` |
 | `CLICKHOUSE_MCP_ALLOWED_ORIGINS` | Public origin(s), e.g. `https://mcp.example.com`. Required for the browser consent step: browsers send `Origin` on the `POST /consent` form, and any `Origin` not listed is rejected with `403` |
 
